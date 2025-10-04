@@ -1,15 +1,49 @@
-from gevent import socket
-from gevent.pool import Pool
-from gevent.server import StreamServer
+try:
+    import gevent
+    from gevent import socket
+    from gevent.pool import Pool
+    from gevent.server import StreamServer
+    from gevent.thread import get_ident
+    HAVE_GEVENT = True
+except ImportError:
+    import socket
+    Pool = StreamServer = None
+    HAVE_GEVENT = False
 
 from collections import namedtuple
 from io import BytesIO
 from socket import error as socket_error
 
+import sys
+
 
 # We'll use exceptions to notify the connection-handling loop of problems.
-class CommandError(Exception): pass
+class CommandError(Exception): 
+    def __init__(self, message):
+        self.message = message
+        super(CommandError, self).__init__()
+
 class Disconnect(Exception): pass
+
+if sys.version_info[0] == 3:
+    unicode = str
+    basestring = (bytes, str)
+
+def encode(s):
+    if isinstance(s, unicode):
+        return s.encode('utf-8')
+    elif isinstance(s, bytes):
+        return s
+    else:
+        return str(s).encode('utf-8')
+
+def decode(s):
+    if isinstance(s, unicode):
+        return s
+    elif isinstance(s, bytes):
+        return s.decode('utf-8')
+    else:
+        return str(s)
 
 Error = namedtuple('Error', ('message',))
 
@@ -23,17 +57,6 @@ class ProtocolHandler(object):
             '$': self.handle_string,
             '*': self.handle_array,
             '%': self.handle_dict}
-
-    def handle_request(self, socket_file):
-        first_byte = socket_file.read(1)
-        if not first_byte:
-            raise Disconnect()
-
-        try:
-            # Delegate to the appropriate handler based on the first byte.
-            return self.handlers[first_byte](socket_file)
-        except KeyError:
-            raise CommandError('bad request')
 
     def handle_simple_string(self, socket_file):
         return socket_file.readline().rstrip('\r\n')
@@ -61,6 +84,17 @@ class ProtocolHandler(object):
         elements = [self.handle_request(socket_file)
                     for _ in range(num_items * 2)]
         return dict(zip(elements[::2], elements[1::2]))
+    
+    def handle_request(self, socket_file):
+        first_byte = socket_file.read(1)
+        if not first_byte:
+            raise EOFError()
+
+        try:
+            return self.handlers[first_byte](socket_file)
+        except KeyError:
+            rest = socket_file.readline().rstrip(b'\r\n')
+            return first_byte + rest
 
     def write_response(self, socket_file, data):
         buf = BytesIO()
@@ -70,28 +104,28 @@ class ProtocolHandler(object):
         socket_file.flush()
 
     def _write(self, buf, data):
-        if isinstance(data, str):
-            data = data.encode('utf-8')
-
+        print(data)
         if isinstance(data, bytes):
-            buf.write('$%s\r\n%s\r\n' % (len(data), data))
-        elif isinstance(data, int):
-            buf.write(':%s\r\n' % data)
+            buf.write(b'$%d\r\n%s\r\n' % (len(data), data))
+        elif isinstance(data, unicode):
+            bdata = data.encode('utf-8')
+            buf.write(b'^%d\r\n%s\r\n' % (len(bdata), bdata))
+        elif isinstance(data, (int, float)):
+            buf.write(b':%d\r\n' % data)
         elif isinstance(data, Error):
-            buf.write('-%s\r\n' % error.message)
+            buf.write(b'-%s\r\n' % data.message)
         elif isinstance(data, (list, tuple)):
-            buf.write('*%s\r\n' % len(data))
+            print(len(data))
+            buf.write(b'*%d\r\n' % len(data))
             for item in data:
                 self._write(buf, item)
         elif isinstance(data, dict):
-            buf.write('%%%s\r\n' % len(data))
+            buf.write(b'%%%d\r\n' % len(data))
             for key in data:
                 self._write(buf, key)
                 self._write(buf, data[key])
         elif data is None:
-            buf.write('$-1\r\n')
-        else:
-            raise CommandError('unrecognized type: %s' % type(data))
+            buf.write(b'$-1\r\n')
 
 
 class Server(object):
@@ -214,4 +248,7 @@ class Client(object):
 
 if __name__ == '__main__':
     from gevent import monkey; monkey.patch_all()
-    Server().run()
+    try:
+        Server().run()
+    except KeyboardInterrupt:
+        print('\x1b[1;31mshutting down\x1b[0m')
