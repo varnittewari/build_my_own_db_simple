@@ -16,8 +16,6 @@ from socket import error as socket_error
 
 import sys
 
-
-# We'll use exceptions to notify the connection-handling loop of problems.
 class CommandError(Exception): 
     def __init__(self, message):
         self.message = message
@@ -72,11 +70,10 @@ class ProtocolHandler(object):
         return int(socket_file.readline().rstrip('\r\n'))
 
     def handle_string(self, socket_file):
-        # First read the length ($<length>\r\n).
         length = int(socket_file.readline().rstrip('\r\n'))
         if length == -1:
-            return None  # Special-case for NULLs.
-        length += 2  # Include the trailing \r\n in count.
+            return None  
+        length += 2  
         return socket_file.read(length)[:-2]
 
     def handle_array(self, socket_file):
@@ -146,10 +143,8 @@ class Server(object):
         self._commands = self.get_commands()
 
     def connection_handler(self, conn, address):
-        # Convert "conn" (a socket object) into a file-like object.
         socket_file = conn.makefile('rwb')
 
-        # Process client requests until client disconnects.
         while True:
             try:
                 data = self._protocol.handle_request(socket_file)
