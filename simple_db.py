@@ -23,6 +23,10 @@ class CommandError(Exception):
         self.message = message
         super(CommandError, self).__init__()
 
+class ServerError(Exception): pass
+class ServerDisconnect(ServerError): pass
+class ServerInternalError(ServerError): pass
+
 class Disconnect(Exception): pass
 
 if sys.version_info[0] == 3:
@@ -222,8 +226,22 @@ class Client(object):
         self._fh = self._socket.makefile('rwb')
 
     def execute(self, *args):
-        self._protocol.write_response(self._fh, args)
-        resp = self._protocol.handle_request(self._fh)
+        conn = self._socket_pool.checkout()
+        close_conn = args[0] in (b'QUIT', b'SHUTDOWN')
+        self._protocol.write_response(conn, args)
+        try:
+            resp = self._protocol.handle_request(conn)
+        except EOFError:
+            self._socket_pool.close()
+            raise ServerDisconnect('server went away')
+        except Exception:
+            self._socket_pool.close()
+            raise ServerInternalError('internal server error')
+        else:
+            if close_conn:
+                self._socket_pool.close()
+            else:
+                self._socket_pool.checkin()
         if isinstance(resp, Error):
             raise CommandError(resp.message)
         return resp
